@@ -1,0 +1,149 @@
+
+volumes:
+  postgres-data:
+    driver: local # Локальный том для данных базы.
+  go-mod-cache:
+    driver: local
+
+###########################
+# Services - service-podof
+###########################
+services:
+  service-podof:
+    image: service-podof
+    hostname: service-podof
+    deploy:
+      replicas: 1
+    restart: always 
+    env_file:
+      - .env
+    build:
+      context: ./
+      dockerfile: ./deploy/docker/Dockerfile.service-podof
+    #environment:
+     # DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+    volumes:
+      - ./logs:/var/log/service-podof  # Том для логов.
+    ports:
+     - 8080:8080
+    
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 10s 
+
+###########################
+# Services - grpc-server
+###########################
+  grpc-server:
+    image: grpc-server
+    hostname: grpc-server
+    deploy:
+      replicas: 1
+    restart: always
+    env_file:
+      - .env
+    build:
+      context: ./
+      dockerfile: ./deploy/docker/Dockerfile.grpc-server
+    volumes:
+      - ./logs:/var/log/grpc-server
+    ports:
+      - 3000:3000
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 10s
+      
+
+#######################
+# Database - Postgresql
+#######################
+  db:
+    container_name: 'db'
+    image: postgres:17
+    restart: always  # Перезапускать в случае сбоя или при перезагрузке хоста.
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Please configure POSTGRES_USER in the .env file}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Please configure POSTGRES_PASSWORD in the .env file}
+      POSTGRES_DB: ${POSTGRES_DB:?Please configure POSTGRES_DB in the .env file}
+      PGDATA: "/var/lib/postgresql/data/pgdata"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d ${POSTGRES_DB} -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data  # Том для данных базы.
+    
+    ports:
+      - 5432:5432
+
+
+######################
+# Migrations - Goose
+######################
+  migrations:
+    container_name: 'migrations'
+    restart: on-failure  # Перезапускать только в случае ошибки.
+    env_file:
+      - .env 
+    environment:
+      GOOSE_DRIVER: "postgres"
+      GOOSE_DBSTRING: "${PG_DSN}"
+      GOOSE_MIGRATION_DIR: "migrations"
+    build:
+      context: ./
+      dockerfile: ./deploy/docker/Dockerfile.migrations  # Путь к Dockerfile для миграций.
+   # command: ["up"]  # Запускаем миграции при старте
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 10s  # Graceful shutdown time (10 seconds)
+
+######################
+# Prometheus
+######################
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    ports:
+      - 9090:9090
+    restart: unless-stopped
+    volumes:
+      - ./prometheus:/etc/prometheus
+      - ./prometheus/prom_data:/prometheus
+
+######################
+# Jobs - Unit Tests
+######################
+  unit-tests:
+    image: golang:1.24
+    container_name: unit-tests
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./test:/app/test
+      - go-mod-cache:/go/pkg/mod
+######################
+# Grafana
+######################
+#  grafana:
+#    container_name: grafana
+#    image: grafana/grafana:10.3.1
+#    ports:
+#      - 3000:3000
+#    volumes:
+#      - ./grafana/data:/var/lib/grafana
+#      - ./grafana/provisioning/:/etc/grafana/provisioning/
+#    restart: always
+#    environment:
+#      GF_INSTALL_PLUGINS: 'grafana-piechart-panel'
+#    depends_on:
+#      - prometheus

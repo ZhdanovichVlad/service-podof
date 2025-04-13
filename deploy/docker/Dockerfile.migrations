@@ -1,0 +1,20 @@
+# Первая фаза сборки.
+FROM golang:1.23 AS builder
+
+RUN go install github.com/pressly/goose/v3/cmd/goose@latest
+
+# Вторая фаза сборки.
+FROM alpine:latest
+
+RUN apk add --no-cache bash ca-certificates libc6-compat
+
+COPY --from=builder /go/bin/goose /usr/bin/goose
+
+WORKDIR /migrations
+
+COPY migrations migrations
+
+ENTRYPOINT ["goose"]
+
+# Команда по умолчанию(можно изменить при запуске контейнера).
+CMD ["up"]
